@@ -110,6 +110,8 @@ public class ${mainClass} {
     PCollection<String> lines = pipeline.apply("ReadFile", TextIO.read().from(options.getInput()));
     lines = buildPipeline(lines);
     lines.apply(TextIO.write().to(options.getOutput()));
+
+    pipeline.run().waitUntilFinish();
   }
 
   /**
