@@ -1,0 +1,302 @@
+plugins {
+    id 'java'
+    id 'application'
+    id 'com.diffplug.spotless' version '5.17.0'
+    id 'checkstyle'
+    id 'com.github.spotbugs' version '5.0.0-beta.3'
+    id 'pmd'
+    id 'jacoco'
+    id 'com.github.johnrengelman.shadow' version "7.1.2"
+}
+
+version = '0.0.1'
+
+task addSubProject {
+    doFirst {
+        def subProjectName = project.hasProperty("projectName") ? project.property("projectName") : ""
+        def applicationClassName = project.hasProperty("appName") ? project.property("appName").capitalize() : "App"
+        def packageName = rootProject.name.tr("-", ".")
+        def packagePath = rootProject.name.tr("-", "/")
+
+        if (subProjectName == "") {
+            println "Error: must be set -PprojectName=<Sub Project Name>"
+            throw new GradleException("NoRequiredArgument")
+        }
+
+        def buildGradleTemplate = """plugins {
+    id 'application'
+}
+
+version = '0.0.1'
+
+repositories {
+    mavenCentral()
+}
+
+application {
+    mainClass = '${packageName}.${applicationClassName}'
+}
+    """
+
+        // Write include('<projectName>') to settings.gradle
+        def settingFile = file("${rootProject.rootDir}/settings.gradle")
+        StringWriter writer = new StringWriter()
+        def writable = settingFile.filterLine({ String line ->
+            return line ==~ "include *?\\( *?'${subProjectName}' *?\\)"
+        })
+        writable.writeTo(writer)
+
+        if(writer.toString() == "") {
+            settingFile.append("include('${subProjectName}')\n")
+        } else {
+            println "Error: projectName: ${subProjectName} already exists"
+            throw new GradleException("ProjectAlreadyExists")
+        }
+
+        // create project directory and initilal files
+        def mainClass = applicationClassName
+        def absProjectPath = "${rootProject.rootDir}/${subProjectName}"
+        def absProjectSrcPath = "${absProjectPath}/src"
+
+        def absMainPath = "${absProjectSrcPath}/main"
+        def absPackagePath = "${absMainPath}/java/${packagePath}"
+        def absMainResourcePath = "${absMainPath}/resources"
+
+        def absTestPath = "${absProjectSrcPath}/test"
+        def absTestPackagePath ="${absProjectSrcPath}/test/java/${packagePath}"
+        def absTestResourcePath ="${absTestPath}/resources"
+
+        mkdir(absPackagePath)
+        def mainFile = new File("${absPackagePath}/${mainClass}.java")
+        mainFile.text = """package ${packageName};
+
+import org.apache.beam.sdk.Pipeline;
+import org.apache.beam.sdk.io.TextIO;
+import org.apache.beam.sdk.options.Description;
+import org.apache.beam.sdk.options.PipelineOptions;
+import org.apache.beam.sdk.options.PipelineOptionsFactory;
+import org.apache.beam.sdk.options.Validation.Required;
+import org.apache.beam.sdk.transforms.DoFn;
+import org.apache.beam.sdk.transforms.Filter;
+import org.apache.beam.sdk.transforms.FlatMapElements;
+import org.apache.beam.sdk.transforms.ParDo;
+import org.apache.beam.sdk.values.PCollection;
+import org.apache.beam.sdk.values.TypeDescriptors;
+import java.util.Arrays;
+
+/**
+ *
+ */
+public class ${mainClass} {
+  public static interface Options extends PipelineOptions {
+    @Description("Input for the pipeline")
+    @Required
+    String getInput();
+
+    void setInput(String input);
+
+    @Description("Output for the pipeline")
+    String getOutput();
+
+    void setOutput(String output);
+  }
+
+  public static void main(String[] args) {
+    PipelineOptionsFactory.register(Options.class);
+    final Options options =
+        PipelineOptionsFactory.fromArgs(args).withValidation().as(Options.class);
+    Pipeline pipeline = Pipeline.create(options);
+
+    PCollection<String> lines = pipeline.apply("ReadFile", TextIO.read().from(options.getInput()));
+    lines = buildPipeline(lines);
+    lines.apply(TextIO.write().to(options.getOutput()));
+  }
+
+  /**
+   *
+   * @param lines
+   * @return
+   */
+  public static PCollection<String> buildPipeline(PCollection<String> lines) {
+    return lines.apply("Find words",
+        FlatMapElements.into(TypeDescriptors.strings())
+            .via((String line) -> Arrays.asList(line.split(","))))
+        .apply("Filter Empty", Filter.by(line -> !line.isEmpty()))
+        .apply("Nothing", ParDo.of(new DoFn<String, String>() {
+          @ProcessElement
+          public void processElement(@Element String element, OutputReceiver<String> out) {
+            out.output(element);
+          }
+        }));
+  }
+}"""
+
+        mkdir(absMainResourcePath)
+        mkdir(absTestPackagePath)
+        def testFile = new File("${absTestPackagePath}/${mainClass}Test.java")
+        testFile.text = """package ${packageName};
+
+import java.util.Arrays;
+import java.util.List;
+import org.apache.beam.sdk.testing.PAssert;
+import org.apache.beam.sdk.testing.TestPipeline;
+import org.apache.beam.sdk.transforms.Create;
+import org.apache.beam.sdk.values.PCollection;
+import org.junit.Rule;
+import org.junit.Test;
+
+
+public class ${mainClass}Test {
+  @Rule
+  public final transient TestPipeline testPipeline = TestPipeline.create();
+
+  @Test
+  public void testPipeline() {
+    final List<String> words = Arrays.asList("hoge", "hage", "");
+    PCollection<String> lines = testPipeline.apply(Create.of(words));
+    lines = ${mainClass}.buildPipeline(lines);
+
+    PAssert.that(lines).containsInAnyOrder(
+        "hoge",
+        "hage");
+
+    testPipeline.run();
+  }
+}"""
+
+        mkdir(absTestResourcePath)
+
+        def buildGradleFile = new File("${absProjectPath}/build.gradle")
+        buildGradleFile.text = buildGradleTemplate
+    }
+}
+
+subprojects {
+    apply plugin: 'java'
+    apply plugin: 'application'
+    apply plugin: 'com.github.spotbugs'
+    apply plugin: 'com.diffplug.spotless'
+    apply plugin: 'pmd'
+    apply plugin: 'jacoco'
+    apply plugin: 'checkstyle'
+    apply plugin: 'com.github.johnrengelman.shadow'
+
+    compileJava {
+        options.encoding = 'UTF-8'
+        sourceCompatibility = JavaVersion.VERSION_11
+        targetCompatibility = JavaVersion.VERSION_11
+    }
+
+    repositories {
+        mavenCentral()
+    }
+
+    ext {
+        lombokVersion = '1.18.22'
+        junitVersion = '5.7.2'
+        apacheBeamVersion = '2.38.0'
+        slf4jVersion = '1.7.32'
+
+        checkstyleToolVersion = '9.0.1'
+        pwdToolVersion = '6.39.0'
+    }
+
+    dependencies {
+        // Beam
+        implementation "org.apache.beam:beam-sdks-java-core:${apacheBeamVersion}"
+        runtimeOnly "org.apache.beam:beam-runners-direct-java:${apacheBeamVersion}"
+
+        // Logging
+        implementation "org.slf4j:slf4j-api:${slf4jVersion}"
+        implementation "org.slf4j:slf4j-jdk14:${slf4jVersion}"
+
+        // Lombok
+        compileOnly "org.projectlombok:lombok:${lombokVersion}"
+        annotationProcessor "org.projectlombok:lombok:${lombokVersion}"
+        testCompileOnly "org.projectlombok:lombok:${lombokVersion}"
+        testAnnotationProcessor "org.projectlombok:lombok:${lombokVersion}"
+
+        // JUnit
+        testImplementation 'junit:junit:4.+'
+        testImplementation 'org.hamcrest:hamcrest-all:1.3'
+    }
+
+    configurations {
+        compileClasspath {
+            resolutionStrategy.activateDependencyLocking()
+        }
+        runtimeClasspath {
+            resolutionStrategy.activateDependencyLocking()
+        }
+        annotationProcessor {
+            resolutionStrategy.activateDependencyLocking()
+        }
+    }
+
+    dependencyLocking {
+        lockAllConfigurations()
+    }
+
+    /**
+     * Test Settings
+     */
+    tasks.named('test') {
+        dependsOn 'cleanTest'
+        testLogging {
+            showStandardStreams true
+            events 'started', 'passed', 'skipped', 'failed'
+            exceptionFormat 'full'
+        }
+        finalizedBy jacocoTestReport
+    }
+
+    jacocoTestReport {
+        dependsOn test
+        reports {
+            xml.required = false
+            csv.required = false
+            html.outputLocation = layout.buildDirectory.dir('jacocoHtml')
+        }
+    }
+
+    /**
+     * Static Analytics
+     */
+    spotbugsMain {
+        ignoreFailures = true
+        showProgress = true
+        reports {
+            html {
+                enabled = true
+                destination = file("$buildDir/reports/spotbugs/main/spotbugs.html")
+                stylesheet = 'fancy-hist.xsl'
+            }
+        }
+    }
+
+    spotless {
+        java {
+            eclipse().configFile("${rootProject.rootDir}/config/formatter/eclipse-java-google-style.xml")
+        }
+    }
+
+    checkstyle {
+        toolVersion = checkstyleToolVersion
+    }
+
+    tasks.withType(Checkstyle).configureEach {
+        configDirectory.set(file("${project.rootDir}/config/checkstyle"))
+    }
+
+    pmd {
+        toolVersion = pwdToolVersion
+        ignoreFailures = true
+        consoleOutput = true
+        ruleSets = [
+            'category/java/bestpractices.xml',
+            'category/java/performance.xml',
+            'category/java/security.xml',
+        ]
+        sourceSets = [sourceSets.main]
+    }
+}
