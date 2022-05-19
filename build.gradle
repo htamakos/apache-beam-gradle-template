@@ -35,8 +35,7 @@ repositories {
 
 application {
     mainClass = '${packageName}.${applicationClassName}'
-}
-    """
+}"""
 
         // Write include('<projectName>') to settings.gradle
         def settingFile = file("${rootProject.rootDir}/settings.gradle")
@@ -206,7 +205,11 @@ subprojects {
     dependencies {
         // Beam
         implementation "org.apache.beam:beam-sdks-java-core:${apacheBeamVersion}"
-        runtimeOnly "org.apache.beam:beam-runners-direct-java:${apacheBeamVersion}"
+        if (project.hasProperty("dataflow-runner")) {
+            dependencies {
+                runtimeOnly "org.apache.beam:beam-runners-direct-java:${apacheBeamVersion}"
+            }
+        }
 
         // Logging
         implementation "org.slf4j:slf4j-api:${slf4jVersion}"
@@ -242,6 +245,27 @@ subprojects {
     /**
      * Test Settings
      */
+
+    tasks.register("deploy") {
+        doLast {
+            exec {
+                commandLine "echo", "dataflow", "flex-template", "build", 
+                            "--image-gcr-path=gcr:",
+                            "--project=$GCP_PROJECT",
+                            "--jar=${buildDir}/libs/${project.name}-${project.version}-all.jar",
+                            "--metadata-file=${projectDir}/metadata.json",
+                            "--flex-template-base-image=JAVA11",
+                            "--sdk-language=JAVA",
+                            "--env FLEX_TEMPLATE_JAVA_MAIN_CLASS=${application.mainClass.get()}"
+            }
+        }
+    }
+
+    task execute(type: JavaExec) {
+        classpath = sourceSets.main.runtimeClasspath
+        mainClass.set(System.getProperty("mainClass"))
+    }
+
     tasks.named('test') {
         dependsOn 'cleanTest'
         testLogging {
