@@ -8,3 +8,4 @@
  */
 
 rootProject.name = 'dataflow-java-samples'
+include('sample1')
